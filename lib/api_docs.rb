@@ -11,39 +11,41 @@ module APIDocs
         @apis = {}
 
         options.each do |key, opts|
+          puts "key:#{key}"
+
           @apis[key] = opts
 
           api_data = data.send opts[:data]
 
-          @apis[key][:api_class] = Class.new(ApiClass)
-          @apis[key][:api_class].data = api_data
+          @apis[key][:api_cache] = WrapperCache.new
+          @apis[key][:api_cache].data = api_data
 
           page "/#{opts[:root]}*", directory_index: false, layout: 'layouts/api'
 
-          api_data.fetch('classes').each do |name, data|
+          api_data.classes.each do |name, data|
             page "/#{opts[:root]}/classes/#{name}.html", proxy: 'api/class.html', layout: 'layouts/api' do
               @title = name
-              @class = @apis[key][:api_class].find(name)
+              @class = @apis[key][:api_cache].find_class(name)
             end
 
             if name == opts[:default_class]
               page "/#{opts[:root]}/index.html", proxy: 'api/class.html', layout: 'layouts/api' do
                 @title = name
-                @class = @apis[key][:api_class].find(name)
+                @class = @apis[key][:api_cache].find_class(name)
               end
             end
           end
 
-          api_data.fetch('modules').each do |name, data|
+          api_data.modules.each do |name, data|
             page "/#{opts[:root]}/modules/#{name}.html", proxy: 'api/module.html', layout: 'layouts/api' do
               @title = name
-              @module = data
+              @module = @apis[key][:api_cache].find_module(name)
             end
           end
 
           # Update data caches
           files.changed("data/#{opts[:data]}.yml") do
-            @apis[key][:api_class].data = api_data
+            @apis[key][:api_cache].data = api_data
           end
         end
       end
@@ -51,29 +53,55 @@ module APIDocs
     alias :included :registered
   end
 
-  class ApiClass
-    @cache = {}
+  class WrapperCache
+    attr_reader :modules
+    attr_reader :classes
+    attr_reader :data
 
-    @data = nil
-    class << self
-      attr_reader :cache
-      attr_reader :data
+    def data=(data)
+      @data = data
+      @modules = {}
+      @classes = {}
     end
 
-    def self.data=(value)
-      @cache = {}
-      @data = value
+    def find_module(name)
+      @modules[name] ||= ModuleWrapper.new(name, @data['modules'][name], self)
     end
 
-    def self.find(name)
-      cache[name] ||= new(name)
+    def find_class(name)
+      @classes[name] ||= ClassWrapper.new(name, @data['classes'][name], self)
+    end
+  end
+
+  class ModuleWrapper
+    attr_reader :name
+
+    def initialize(name, data, cache)
+      @name = name
+      @data = data
+      @cache = cache
     end
 
+    def to_s
+      return self.name
+    end
+
+    def [](attr)
+      @data[attr]
+    end
+
+    def method_missing(method, *args)
+      @data[method]
+    end
+  end
+
+  class ClassWrapper
     attr_reader :native
+    attr_reader :name
 
-    def initialize(name)
-      data = self.class.data['classes'][name]
-
+    def initialize(name, data, cache)
+      @name = name
+      @cache = cache
       if data
         @native = false
         @ldata = data
@@ -83,20 +111,17 @@ module APIDocs
       end
     end
 
-    #def self.inherited(subclass)
-    #  subclass.instance_variable_set(:@cache,
-
     def to_s
       return self.name
     end
 
     def extends
-      @extends ||= @ldata['extends'] && self.class.find(@ldata['extends'])
+      @extends ||= @ldata['extends'] && @cache.find_class(@ldata['extends'])
     end
 
     def uses
       @uses ||= @ldata['uses'] ?
-                  @ldata['uses'].map{|u| self.class.find(u) } :
+                  @ldata['uses'].map{|u| @cache.find_class(u) } :
                   []
     end
 
